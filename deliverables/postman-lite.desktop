@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Postman Lite
+Comment=Lightweight HTTP API desktop client (local web UI)
+Exec=/home/node/clawd/postman-lite/deliverables/run-postman-lite.sh
+Icon=/home/node/clawd/postman-lite/assets/icon.svg
+Terminal=false
+Type=Application
+Categories=Development;Network;

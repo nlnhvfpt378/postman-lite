@@ -1,0 +1,8 @@
+Package: postman-lite
+Version: 0.1.0
+Section: utils
+Priority: optional
+Architecture: amd64
+Maintainer: clawd <noreply@example.com>
+Depends: xdg-utils
+Description: Lightweight Postman-style desktop HTTP client written in Go with embedded web UI.

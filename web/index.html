@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Postman Lite</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #111827;
+      --panel-2: #1f2937;
+      --text: #e5e7eb;
+      --muted: #94a3b8;
+      --accent: #ff6c37;
+      --ok: #22c55e;
+      --bad: #ef4444;
+      --border: #334155;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Inter, system-ui, sans-serif; background: var(--bg); color: var(--text); }
+    .app { display: grid; grid-template-columns: 44% 56%; height: 100vh; }
+    .panel { padding: 18px; border-right: 1px solid var(--border); overflow: auto; }
+    .panel:last-child { border-right: 0; }
+    h1 { font-size: 20px; margin: 0 0 16px; }
+    h2 { font-size: 14px; color: var(--muted); margin: 20px 0 8px; text-transform: uppercase; letter-spacing: 0.08em; }
+    .row { display: flex; gap: 10px; margin-bottom: 10px; }
+    select, input, textarea, button { border-radius: 10px; border: 1px solid var(--border); background: var(--panel); color: var(--text); }
+    select, input { padding: 12px; }
+    textarea { width: 100%; min-height: 180px; padding: 12px; resize: vertical; }
+    input { width: 100%; }
+    select { width: 130px; }
+    button { padding: 12px 16px; cursor: pointer; background: var(--accent); border: 0; font-weight: 600; }
+    button.secondary { background: var(--panel-2); border: 1px solid var(--border); }
+    .toolbar { display: flex; gap: 10px; margin: 10px 0 18px; }
+    .meta { display: flex; flex-wrap: wrap; gap: 14px; color: var(--muted); margin-bottom: 14px; }
+    .status.ok { color: var(--ok); }
+    .status.bad { color: var(--bad); }
+    pre { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px; white-space: pre-wrap; word-break: break-word; min-height: 220px; margin: 0; }
+    .section { margin-bottom: 18px; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <section class="panel">
+      <h1>Postman Lite</h1>
+      <div class="row">
+        <select id="method">
+          <option>GET</option><option>POST</option><option>PUT</option><option>DELETE</option><option>PATCH</option>
+        </select>
+        <input id="url" placeholder="https://httpbin.org/anything" />
+      </div>
+      <div class="toolbar">
+        <button id="sendBtn">发送请求</button>
+        <button class="secondary" id="formatBtn">JSON 美化</button>
+        <button class="secondary" id="copyBtn">复制响应体</button>
+      </div>
+
+      <div class="section">
+        <h2>Headers</h2>
+        <textarea id="headers" placeholder="Content-Type: application/json&#10;Authorization: Bearer xxxxxx"></textarea>
+      </div>
+      <div class="section">
+        <h2>Body</h2>
+        <textarea id="body" placeholder='{"hello":"world"}'></textarea>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h1>响应</h1>
+      <div class="meta">
+        <div id="status" class="status">状态：未发送</div>
+        <div id="duration">耗时：-</div>
+        <div id="size">大小：-</div>
+      </div>
+      <div class="section">
+        <h2>响应头</h2>
+        <pre id="respHeaders"></pre>
+      </div>
+      <div class="section">
+        <h2>响应体</h2>
+        <pre id="respBody"></pre>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const els = {
+      method: $('method'), url: $('url'), headers: $('headers'), body: $('body'),
+      sendBtn: $('sendBtn'), formatBtn: $('formatBtn'), copyBtn: $('copyBtn'),
+      status: $('status'), duration: $('duration'), size: $('size'),
+      respHeaders: $('respHeaders'), respBody: $('respBody')
+    };
+
+    function parseHeaders(text) {
+      return text.split('\n').map(line => line.trim()).filter(Boolean).map(line => {
+        const idx = line.indexOf(':');
+        if (idx === -1) return null;
+        return { key: line.slice(0, idx).trim(), value: line.slice(idx + 1).trim() };
+      }).filter(Boolean);
+    }
+
+    function prettyJSON(text) {
+      return JSON.stringify(JSON.parse(text), null, 2);
+    }
+
+    function formatHeaders(headers) {
+      return Object.entries(headers || {}).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`).join('\n');
+    }
+
+    function maybePrettyBody(body, headers) {
+      const ct = (headers?.['Content-Type'] || headers?.['content-type'] || [''])[0] || '';
+      const t = (body || '').trim();
+      if (!t) return '';
+      if (ct.toLowerCase().includes('json') || t.startsWith('{') || t.startsWith('[')) {
+        try { return prettyJSON(t); } catch { return body; }
+      }
+      return body;
+    }
+
+    els.formatBtn.onclick = () => {
+      try { els.body.value = prettyJSON(els.body.value); } catch { alert('Body 不是合法 JSON'); }
+    };
+    els.copyBtn.onclick = async () => {
+      await navigator.clipboard.writeText(els.respBody.textContent || '');
+    };
+
+    els.sendBtn.onclick = async () => {
+      els.sendBtn.disabled = true;
+      els.status.textContent = '状态：请求中...';
+      els.status.className = 'status';
+      els.duration.textContent = '耗时：-';
+      els.size.textContent = '大小：-';
+      els.respHeaders.textContent = '';
+      els.respBody.textContent = '';
+      try {
+        const resp = await fetch('/api/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            method: els.method.value,
+            url: els.url.value.trim(),
+            headers: parseHeaders(els.headers.value),
+            body: els.body.value
+          })
+        });
+        const data = await resp.json();
+        if (data.error) {
+          els.status.textContent = '状态：失败';
+          els.status.className = 'status bad';
+          els.respBody.textContent = data.error;
+          return;
+        }
+        els.status.textContent = `状态：${data.status}`;
+        els.status.className = data.statusCode >= 400 ? 'status bad' : 'status ok';
+        const durationMs = typeof data.duration === 'number' ? Math.round(data.duration / 1000000) : 0;
+        els.duration.textContent = `耗时：${durationMs} ms`;
+        els.size.textContent = `大小：${data.size} bytes`;
+        els.respHeaders.textContent = formatHeaders(data.headers);
+        els.respBody.textContent = maybePrettyBody(data.body, data.headers);
+      } catch (err) {
+        els.status.textContent = '状态：失败';
+        els.status.className = 'status bad';
+        els.respBody.textContent = String(err);
+      } finally {
+        els.sendBtn.disabled = false;
+      }
+    };
+
+    els.url.value = 'https://httpbin.org/anything';
+    els.headers.value = 'Content-Type: application/json';
+    els.body.value = '{\n  "hello": "world"\n}';
+  </script>
+</body>
+</html>

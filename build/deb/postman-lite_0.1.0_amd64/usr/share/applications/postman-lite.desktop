@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Postman Lite
+Comment=Lightweight HTTP API desktop client (local web UI)
+Exec=/usr/local/bin/postman-lite
+Icon=postman-lite
+Terminal=false
+Type=Application
+Categories=Development;Network;
