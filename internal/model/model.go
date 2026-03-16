@@ -1,6 +1,7 @@
 package model
 
 import (
+	"fmt"
 	"net/http"
 	"time"
 )
@@ -18,11 +19,15 @@ type Request struct {
 }
 
 type Response struct {
-	StatusCode int         `json:"statusCode"`
-	Status     string      `json:"status"`
+	StatusCode int           `json:"statusCode"`
+	Status     string        `json:"status"`
 	Duration   time.Duration `json:"duration"`
-	Headers    http.Header `json:"headers"`
-	Body       string      `json:"body"`
-	Size       int         `json:"size"`
-	Error      string      `json:"error,omitempty"`
+	Headers    http.Header   `json:"headers"`
+	Body       string        `json:"body"`
+	Size       int           `json:"size"`
+	Error      string        `json:"error,omitempty"`
+}
+
+func (r Response) DurationText() string {
+	return fmt.Sprintf("%d ms", r.Duration.Milliseconds())
 }

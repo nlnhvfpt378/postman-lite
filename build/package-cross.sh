@@ -3,8 +3,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_NAME="postman-lite"
-VERSION="${VERSION:-0.1.0}"
-GO_BIN="${GO_BIN:-/home/node/clawd/.local/go/bin/go}"
+VERSION="${VERSION:-0.2.0}"
+GO_BIN="${GO_BIN:-go}"
 OUT_DIR="$ROOT/deliverables"
 BUILD_DIR="$ROOT/build/dist"
 
@@ -17,8 +17,8 @@ WINDOWS_BIN="$BUILD_DIR/windows_amd64/$APP_NAME.exe"
 LINUX_ARCHIVE="$OUT_DIR/${APP_NAME}_${VERSION}_linux_amd64.tar.gz"
 WINDOWS_ARCHIVE="$OUT_DIR/${APP_NAME}_${VERSION}_windows_amd64.zip"
 
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 "$GO_BIN" build -o "$LINUX_BIN" ./cmd/$APP_NAME
-CGO_ENABLED=0 GOOS=windows GOARCH=amd64 "$GO_BIN" build -o "$WINDOWS_BIN" ./cmd/$APP_NAME
+CGO_ENABLED=1 GOOS=linux GOARCH=amd64 "$GO_BIN" build -o "$LINUX_BIN" ./cmd/$APP_NAME
+CC=x86_64-w64-mingw32-gcc CGO_ENABLED=1 GOOS=windows GOARCH=amd64 "$GO_BIN" build -ldflags='-H windowsgui' -o "$WINDOWS_BIN" ./cmd/$APP_NAME
 
 cp "$ROOT/README.md" "$BUILD_DIR/linux_amd64/README.md"
 cp "$ROOT/README.md" "$BUILD_DIR/windows_amd64/README.md"
