@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version without leading v, e.g. 0.2.0'
+        description: 'Version without leading v, e.g. 0.3.0'
         required: false
         type: string
 
@@ -41,6 +41,9 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Setup fyne CLI
+        run: go install fyne.io/fyne/v2/cmd/fyne@v2.5.4
+
       - name: Install build deps
         run: |
           sudo apt-get update
@@ -53,7 +56,12 @@ jobs:
             libxi-dev \
             libxxf86vm-dev \
             libasound2-dev \
-            gcc-mingw-w64-x86-64
+            gcc-mingw-w64-x86-64 \
+            clang \
+            clang++ \
+            llvm \
+            libosxcross-clang-dev \
+            zip
 
       - name: Go mod tidy
         run: go mod tidy
@@ -62,6 +70,8 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
           GO_BIN: go
+          FYNE_BIN: /home/runner/go/bin/fyne
+          APP_ID: io.github.nlnhvfpt378.postmanlite
         run: bash ./build/package-cross.sh
 
       - name: Create or update release
@@ -71,6 +81,8 @@ jobs:
           files: |
             deliverables/postman-lite_${{ steps.version.outputs.version }}_linux_amd64.tar.gz
             deliverables/postman-lite_${{ steps.version.outputs.version }}_windows_amd64.zip
+            deliverables/postman-lite_${{ steps.version.outputs.version }}_darwin_amd64.tar.gz
+            deliverables/postman-lite_${{ steps.version.outputs.version }}_darwin_arm64.tar.gz
           generate_release_notes: true
           draft: false
           prerelease: false

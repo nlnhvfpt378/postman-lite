@@ -3,7 +3,7 @@ ROOT:=$(shell pwd)
 GO?=go
 BIN_DIR=$(ROOT)/deliverables/bin
 DIST_DIR=$(ROOT)/deliverables
-VERSION?=0.2.0
+VERSION?=0.3.0
 
 .PHONY: deps build run package-cross clean
 

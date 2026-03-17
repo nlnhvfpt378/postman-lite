@@ -3,15 +3,19 @@ package ui
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/layout"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	appcore "postman-lite/internal/app"
 	"postman-lite/internal/model"
@@ -26,6 +30,124 @@ func New(core *appcore.App) *DesktopApp {
 	return &DesktopApp{core: core}
 }
 
+type tabDescriptor struct {
+	state state.RequestTabState
+	item  *tabButton
+}
+
+type tabButton struct {
+	widget.BaseWidget
+	label       *widget.Label
+	closeBtn    *widget.Button
+	title       string
+	active      bool
+	onTap       func()
+	onMiddleTap func()
+	onSecondary func(fyne.Position)
+	onClose     func()
+}
+
+func newTabButton(title string) *tabButton {
+	t := &tabButton{
+		label:    widget.NewLabel(title),
+		closeBtn: widget.NewButtonWithIcon("", theme.CancelIcon(), nil),
+		title:    title,
+	}
+	t.closeBtn.Importance = widget.LowImportance
+	t.closeBtn.OnTapped = func() {
+		if t.onClose != nil {
+			t.onClose()
+		}
+	}
+	t.label.Truncation = fyne.TextTruncateEllipsis
+	t.ExtendBaseWidget(t)
+	return t
+}
+
+func (t *tabButton) SetTitle(title string) {
+	t.title = title
+	t.label.SetText(title)
+	t.Refresh()
+}
+
+func (t *tabButton) SetActive(active bool) {
+	t.active = active
+	t.Refresh()
+}
+
+func (t *tabButton) CreateRenderer() fyne.WidgetRenderer {
+	bg := canvasRect(theme.ColorNameInputBackground)
+	line := canvasRect(theme.ColorNameSeparator)
+	content := container.NewBorder(nil, nil, nil, t.closeBtn, t.label)
+	objects := []fyne.CanvasObject{bg, line, content}
+	return &tabButtonRenderer{tab: t, bg: bg, line: line, content: content, objects: objects}
+}
+
+func (t *tabButton) Tapped(*fyne.PointEvent) {
+	if t.onTap != nil {
+		t.onTap()
+	}
+}
+
+func (t *tabButton) TappedSecondary(ev *fyne.PointEvent) {
+	if t.onSecondary != nil {
+		t.onSecondary(ev.AbsolutePosition)
+	}
+}
+
+func (t *tabButton) MouseDown(ev *desktop.MouseEvent) {
+	if ev.Button == desktop.MouseButtonTertiary && t.onMiddleTap != nil {
+		t.onMiddleTap()
+	}
+}
+
+func (t *tabButton) MouseUp(*desktop.MouseEvent) {}
+
+func (t *tabButton) MinSize() fyne.Size {
+	labelSize := t.label.MinSize()
+	closeSize := t.closeBtn.MinSize()
+	return fyne.NewSize(max(labelSize.Width+closeSize.Width+24, 128), max(labelSize.Height, closeSize.Height)+14)
+}
+
+type tabButtonRenderer struct {
+	tab     *tabButton
+	bg      *canvas.Rectangle
+	line    *canvas.Rectangle
+	content *fyne.Container
+	objects []fyne.CanvasObject
+}
+
+func (r *tabButtonRenderer) Layout(size fyne.Size) {
+	r.bg.Resize(size)
+	r.line.Resize(fyne.NewSize(size.Width, 1))
+	r.line.Move(fyne.NewPos(0, size.Height-1))
+	r.content.Move(fyne.NewPos(10, 7))
+	r.content.Resize(fyne.NewSize(size.Width-20, size.Height-14))
+}
+
+func (r *tabButtonRenderer) MinSize() fyne.Size { return r.tab.MinSize() }
+func (r *tabButtonRenderer) Refresh() {
+	variant := fyne.CurrentApp().Settings().ThemeVariant()
+	th := fyne.CurrentApp().Settings().Theme()
+	bgColor := th.Color(theme.ColorNameInputBackground, variant)
+	if r.tab.active {
+		bgColor = th.Color(theme.ColorNameOverlayBackground, variant)
+	}
+	r.bg.FillColor = bgColor
+	r.bg.Refresh()
+	r.line.FillColor = th.Color(theme.ColorNameSeparator, variant)
+	r.line.Refresh()
+	r.tab.label.TextStyle = fyne.TextStyle{Bold: r.tab.active}
+	r.tab.label.Refresh()
+	r.content.Refresh()
+}
+func (r *tabButtonRenderer) Objects() []fyne.CanvasObject { return r.objects }
+func (r *tabButtonRenderer) Destroy()                     {}
+
+func canvasRect(name fyne.ThemeColorName) *canvas.Rectangle {
+	return canvas.NewRectangle(fyne.CurrentApp().Settings().Theme().Color(name, fyne.CurrentApp().Settings().ThemeVariant()))
+}
+
 func (d *DesktopApp) Run() error {
 	stored, err := state.Load()
 	if err != nil {
@@ -33,27 +155,21 @@ func (d *DesktopApp) Run() error {
 	}
 
 	fy := app.NewWithID("postman-lite")
+	fy.SetIcon(AppIcon())
 	win := fy.NewWindow("Postman Lite")
-	win.Resize(fyne.NewSize(1180, 760))
+	win.SetIcon(AppIcon())
+	win.Resize(fyne.NewSize(1220, 780))
 
 	methods := []string{"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}
 	methodSelect := widget.NewSelect(methods, nil)
-	methodSelect.SetSelected(stored.Method)
-	if methodSelect.Selected == "" {
-		methodSelect.SetSelected("GET")
-	}
-
 	urlEntry := widget.NewEntry()
-	urlEntry.SetText(stored.URL)
 	urlEntry.SetPlaceHolder("https://httpbin.org/anything")
 
 	headersEntry := widget.NewMultiLineEntry()
-	headersEntry.SetText(stored.Headers)
 	headersEntry.SetPlaceHolder("Content-Type: application/json")
 	headersEntry.Wrapping = fyne.TextWrapWord
 
 	bodyEntry := widget.NewMultiLineEntry()
-	bodyEntry.SetText(stored.Body)
 	bodyEntry.SetPlaceHolder("{\n  \"hello\": \"world\"\n}")
 	bodyEntry.Wrapping = fyne.TextWrapWord
 
@@ -67,19 +183,70 @@ func (d *DesktopApp) Run() error {
 	respBody.Disable()
 	respBody.Wrapping = fyne.TextWrapWord
 
+	var (
+		tabs            []tabDescriptor
+		selectedIndex   int
+		ignoreFieldSave bool
+		tabBar          *fyne.Container
+	)
+
 	saveState := func() {
-		_ = state.Save(state.FormState{
-			Method:  methodSelect.Selected,
-			URL:     urlEntry.Text,
-			Headers: headersEntry.Text,
-			Body:    bodyEntry.Text,
-		})
+		if len(tabs) == 0 {
+			return
+		}
+		st := state.FormState{
+			Tabs:         make([]state.RequestTabState, len(tabs)),
+			SelectedTab:  selectedIndex,
+			NextTabIndex: stored.NextTabIndex,
+		}
+		for i := range tabs {
+			st.Tabs[i] = tabs[i].state
+		}
+		if selectedIndex >= 0 && selectedIndex < len(st.Tabs) {
+			current := st.Tabs[selectedIndex]
+			st.Method = current.Method
+			st.URL = current.URL
+			st.Headers = current.Headers
+			st.Body = current.Body
+		}
+		_ = state.Save(st)
 	}
 
-	methodSelect.OnChanged = func(string) { saveState() }
-	urlEntry.OnChanged = func(string) { saveState() }
-	headersEntry.OnChanged = func(string) { saveState() }
-	bodyEntry.OnChanged = func(string) { saveState() }
+	updateCurrentFromFields := func() {
+		if ignoreFieldSave || selectedIndex < 0 || selectedIndex >= len(tabs) {
+			return
+		}
+		current := &tabs[selectedIndex].state
+		current.Method = methodSelect.Selected
+		current.URL = urlEntry.Text
+		current.Headers = headersEntry.Text
+		current.Body = bodyEntry.Text
+		trimmedURL := strings.TrimSpace(current.URL)
+		if trimmedURL != "" {
+			current.Title = buildTabTitle(current.Method, trimmedURL)
+		} else if strings.TrimSpace(current.Title) == "" {
+			current.Title = fmt.Sprintf("请求 %d", selectedIndex+1)
+		}
+		if tabs[selectedIndex].item != nil {
+			tabs[selectedIndex].item.SetTitle(current.Title)
+		}
+		saveState()
+	}
+
+	selectTab := func(index int) {}
+	refreshTabBar := func() {}
+	closeTabAt := func(index int) {}
+	closeTabsOtherThan := func(index int) {}
+	closeTabsToRight := func(index int) {}
+	importOpenAPI := func(raw string) {}
+	createTab := func(tab state.RequestTabState, autoSelect bool) {}
+
+	methodSelect.OnChanged = func(string) { updateCurrentFromFields() }
+	urlEntry.OnChanged = func(string) { updateCurrentFromFields() }
+	headersEntry.OnChanged = func(string) { updateCurrentFromFields() }
+	bodyEntry.OnChanged = func(string) { updateCurrentFromFields() }
+
+	var importDialogEntry *widget.Entry
 
 	sendBtn := widget.NewButton("发送请求", nil)
 	formatBtn := widget.NewButton("JSON 美化", func() {
@@ -89,7 +256,27 @@ func (d *DesktopApp) Run() error {
 			return
 		}
 		bodyEntry.SetText(pretty)
-		saveState()
+		updateCurrentFromFields()
+	})
+	importBtn := widget.NewButton("导入 OpenAPI JSON", func() {
+		importDialog := dialog.NewCustomConfirm("导入 OpenAPI JSON", "导入", "取消", container.NewBorder(
+			widget.NewLabel("粘贴 OpenAPI 3 JSON 后导入，会按接口生成请求标签页。"), nil, nil, nil,
+			func() *widget.Entry {
+				entry := widget.NewMultiLineEntry()
+				entry.Wrapping = fyne.TextWrapWord
+				entry.SetPlaceHolder("{\n  \"openapi\": \"3.0.0\", ...\n}")
+				entry.Resize(fyne.NewSize(720, 420))
+				importDialogEntry = entry
+				return entry
+			}(),
+		), func(ok bool) {
+			if !ok {
+				return
+			}
+			importOpenAPI(importDialogEntry.Text)
+		}, win)
+		importDialog.Resize(fyne.NewSize(760, 520))
+		importDialog.Show()
 	})
 	copyBtn := widget.NewButton("复制响应体", func() {
 		win.Clipboard().SetContent(respBody.Text)
@@ -103,8 +290,11 @@ func (d *DesktopApp) Run() error {
 		dialog.ShowInformation("状态文件", path, win)
 	})
 
+	requestHint := widget.NewLabel("提示：支持导入 OpenAPI 3 JSON；也可直接按 Ctrl+V / Cmd+V 在窗口内粘贴触发导入。部分桌面环境下右键/中键行为受 Fyne 平台支持限制，已保留按钮与菜单兜底。")
+	requestHint.Wrapping = fyne.TextWrapWord
+
 	sendBtn.OnTapped = func() {
-		saveState()
+		updateCurrentFromFields()
 		sendBtn.Disable()
 		statusValue.SetText("请求中...")
 		timeValue.SetText("-")
@@ -133,11 +323,167 @@ func (d *DesktopApp) Run() error {
 		respBody.SetText(MaybePrettyBody(resp.Body, resp.Headers))
 	}
 
+	buildContextMenu := func(index int, pos fyne.Position) {
+		menu := fyne.NewMenu("",
+			fyne.NewMenuItem("关闭当前", func() { closeTabAt(index) }),
+			fyne.NewMenuItem("关闭右侧", func() { closeTabsToRight(index) }),
+			fyne.NewMenuItem("关闭其他", func() { closeTabsOtherThan(index) }),
+		)
+		if len(tabs) <= 1 {
+			for _, item := range menu.Items {
+				item.Disabled = true
+			}
+		}
+		widget.ShowPopUpMenuAtPosition(menu, win.Canvas(), pos)
+	}
+
+	refreshTabBar = func() {
+		objects := make([]fyne.CanvasObject, 0, len(tabs)+2)
+		for i := range tabs {
+			i := i
+			item := tabs[i].item
+			item.SetActive(i == selectedIndex)
+			item.onTap = func() { selectTab(i) }
+			item.onMiddleTap = func() { closeTabAt(i) }
+			item.onSecondary = func(pos fyne.Position) { buildContextMenu(i, pos) }
+			item.onClose = func() { closeTabAt(i) }
+			objects = append(objects, item)
+		}
+		newTabBtn := widget.NewButtonWithIcon("新建", theme.ContentAddIcon(), func() {
+			createTab(state.RequestTabState{
+				ID:      fmt.Sprintf("tab-%d", stored.NextTabIndex),
+				Title:   fmt.Sprintf("请求 %d", stored.NextTabIndex),
+				Method:  "GET",
+				URL:     "",
+				Headers: "",
+				Body:    "",
+			}, true)
+		})
+		newTabBtn.Importance = widget.LowImportance
+		objects = append(objects, layout.NewSpacer(), newTabBtn)
+		tabBar.Objects = objects
+		tabBar.Refresh()
+	}
+
+	selectTab = func(index int) {
+		if index < 0 || index >= len(tabs) {
+			return
+		}
+		selectedIndex = index
+		current := tabs[index].state
+		ignoreFieldSave = true
+		methodSelect.SetSelected(current.Method)
+		if methodSelect.Selected == "" {
+			methodSelect.SetSelected("GET")
+		}
+		urlEntry.SetText(current.URL)
+		headersEntry.SetText(current.Headers)
+		bodyEntry.SetText(current.Body)
+		ignoreFieldSave = false
+		refreshTabBar()
+		saveState()
+	}
+
+	createTab = func(tab state.RequestTabState, autoSelect bool) {
+		if strings.TrimSpace(tab.ID) == "" {
+			tab.ID = fmt.Sprintf("tab-%d", stored.NextTabIndex)
+		}
+		if strings.TrimSpace(tab.Title) == "" {
+			tab.Title = fmt.Sprintf("请求 %d", stored.NextTabIndex)
+		}
+		if strings.TrimSpace(tab.Method) == "" {
+			tab.Method = "GET"
+		}
+		item := newTabButton(tab.Title)
+		tabs = append(tabs, tabDescriptor{state: tab, item: item})
+		stored.NextTabIndex++
+		refreshTabBar()
+		if autoSelect {
+			selectTab(len(tabs) - 1)
+		} else {
+			saveState()
+		}
+	}
+
+	closeTabAt = func(index int) {
+		if len(tabs) <= 1 || index < 0 || index >= len(tabs) {
+			return
+		}
+		tabs = append(tabs[:index], tabs[index+1:]...)
+		if selectedIndex >= len(tabs) {
+			selectedIndex = len(tabs) - 1
+		} else if index < selectedIndex {
+			selectedIndex--
+		} else if index == selectedIndex && selectedIndex > 0 {
+			selectedIndex--
+		}
+		refreshTabBar()
+		selectTab(selectedIndex)
+	}
+
+	closeTabsOtherThan = func(index int) {
+		if len(tabs) <= 1 || index < 0 || index >= len(tabs) {
+			return
+		}
+		tabs = []tabDescriptor{tabs[index]}
+		selectedIndex = 0
+		refreshTabBar()
+		selectTab(0)
+	}
+
+	closeTabsToRight = func(index int) {
+		if len(tabs) <= 1 || index < 0 || index >= len(tabs)-1 {
+			return
+		}
+		tabs = tabs[:index+1]
+		if selectedIndex > index {
+			selectedIndex = index
+		}
+		refreshTabBar()
+		selectTab(selectedIndex)
+	}
+
+	importOpenAPI = func(raw string) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			dialog.ShowInformation("导入 OpenAPI", "请输入或粘贴 OpenAPI 3 JSON。", win)
+			return
+		}
+		items, err := ParseOpenAPIJSON(raw, &stored.NextTabIndex)
+		if err != nil {
+			dialog.ShowError(err, win)
+			return
+		}
+		for i, item := range items {
+			createTab(item, i == len(items)-1)
+		}
+		dialog.ShowInformation("导入完成", fmt.Sprintf("已导入 %d 个接口标签页。", len(items)), win)
+	}
+
+	// 在窗口级别接管粘贴快捷键，作为可靠导入入口兜底。
+	win.Canvas().AddShortcut(&fyne.ShortcutPaste{}, func(shortcut fyne.Shortcut) {
+		paste, ok := shortcut.(*fyne.ShortcutPaste)
+		if !ok {
+			return
+		}
+		content := ""
+		if paste.Clipboard != nil {
+			content = paste.Clipboard.Content()
+		} else {
+			content = win.Clipboard().Content()
+		}
+		trimmed := strings.TrimSpace(content)
+		if strings.HasPrefix(trimmed, "{") && strings.Contains(trimmed, "\"openapi\"") {
+			importOpenAPI(trimmed)
+		}
+	})
+
 	requestPane := container.NewBorder(
 		container.NewVBox(
 			widget.NewLabelWithStyle("请求", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+			requestHint,
 			container.NewBorder(nil, nil, methodSelect, nil, urlEntry),
-			container.NewHBox(sendBtn, formatBtn, copyBtn, stateBtn),
+			container.NewHBox(sendBtn, formatBtn, importBtn, copyBtn, stateBtn),
 		),
 		nil,
 		nil,
@@ -169,9 +515,25 @@ func (d *DesktopApp) Run() error {
 	)
 
 	split := container.NewHSplit(requestPane, responsePane)
-	split.SetOffset(0.46)
-	content := container.NewBorder(nil, nil, nil, nil, split)
+	split.SetOffset(0.48)
+	tabBar = container.NewHBox()
+	content := container.NewBorder(tabBar, nil, nil, nil, split)
 	win.SetContent(container.New(layout.NewMaxLayout(), content))
+
+	if len(stored.Tabs) == 0 {
+		stored = state.Default()
+	}
+	for _, tab := range stored.Tabs {
+		createTab(tab, false)
+	}
+	if len(tabs) == 0 {
+		createTab(state.Default().Tabs[0], false)
+	}
+	if stored.SelectedTab < 0 || stored.SelectedTab >= len(tabs) {
+		stored.SelectedTab = 0
+	}
+	selectTab(stored.SelectedTab)
+
 	win.ShowAndRun()
 	return nil
 }
@@ -222,4 +584,30 @@ func MaybePrettyBody(body string, headers map[string][]string) string {
 		}
 	}
 	return body
+}
+
+func buildTabTitle(method, rawURL string) string {
+	method = strings.ToUpper(strings.TrimSpace(method))
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return "新请求"
+	}
+	if parsed, err := url.Parse(rawURL); err == nil {
+		path := parsed.Path
+		if path == "" {
+			path = "/"
+		}
+		if parsed.RawQuery != "" {
+			path += "?" + parsed.RawQuery
+		}
+		return fmt.Sprintf("%s %s", method, path)
+	}
+	return fmt.Sprintf("%s %s", method, rawURL)
+}
+
+func max(a, b float32) float32 {
+	if a > b {
+		return a
+	}
+	return b
 }
