@@ -112,29 +112,25 @@ func (d *DesktopApp) Run() error {
 		respHeaders.SetText("")
 		respBody.SetText("")
 
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer cancel()
-			resp := d.core.Client.Send(ctx, model.Request{
-				Method:  methodSelect.Selected,
-				URL:     strings.TrimSpace(urlEntry.Text),
-				Headers: ParseHeaders(headersEntry.Text),
-				Body:    bodyEntry.Text,
-			})
-			fyne.Do(func() {
-				defer sendBtn.Enable()
-				if resp.Error != "" {
-					statusValue.SetText("失败")
-					respBody.SetText(resp.Error)
-					return
-				}
-				statusValue.SetText(resp.Status)
-				timeValue.SetText(resp.DurationText())
-				sizeValue.SetText(fmt.Sprintf("%d bytes", resp.Size))
-				respHeaders.SetText(FormatHeaders(resp.Headers))
-				respBody.SetText(MaybePrettyBody(resp.Body, resp.Headers))
-			})
-		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		resp := d.core.Client.Send(ctx, model.Request{
+			Method:  methodSelect.Selected,
+			URL:     strings.TrimSpace(urlEntry.Text),
+			Headers: ParseHeaders(headersEntry.Text),
+			Body:    bodyEntry.Text,
+		})
+		defer sendBtn.Enable()
+		if resp.Error != "" {
+			statusValue.SetText("失败")
+			respBody.SetText(resp.Error)
+			return
+		}
+		statusValue.SetText(resp.Status)
+		timeValue.SetText(resp.DurationText())
+		sizeValue.SetText(fmt.Sprintf("%d bytes", resp.Size))
+		respHeaders.SetText(FormatHeaders(resp.Headers))
+		respBody.SetText(MaybePrettyBody(resp.Body, resp.Headers))
 	}
 
 	requestPane := container.NewBorder(
