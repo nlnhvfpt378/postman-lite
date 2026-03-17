@@ -11,44 +11,50 @@ OUT_DIR="$ROOT/deliverables"
 BUILD_DIR="$ROOT/build/dist"
 ICON_PATH="$ROOT/assets/icon.png"
 
+TARGETS="${TARGETS:-linux windows darwin_amd64 darwin_arm64}"
+
+has_target() {
+  case " $TARGETS " in
+    *" $1 "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 mkdir -p "$OUT_DIR" "$BUILD_DIR"
 rm -rf \
   "$BUILD_DIR/linux_amd64" \
   "$BUILD_DIR/windows_amd64" \
   "$BUILD_DIR/darwin_amd64" \
   "$BUILD_DIR/darwin_arm64"
-mkdir -p \
-  "$BUILD_DIR/linux_amd64" \
-  "$BUILD_DIR/windows_amd64" \
-  "$BUILD_DIR/darwin_amd64" \
-  "$BUILD_DIR/darwin_arm64"
 
-LINUX_BIN="$BUILD_DIR/linux_amd64/$APP_NAME"
-WINDOWS_BIN="$BUILD_DIR/windows_amd64/$APP_NAME.exe"
-DARWIN_AMD64_APP="$BUILD_DIR/darwin_amd64/$APP_NAME.app"
-DARWIN_ARM64_APP="$BUILD_DIR/darwin_arm64/$APP_NAME.app"
 LINUX_ARCHIVE="$OUT_DIR/${APP_NAME}_${VERSION}_linux_amd64.tar.gz"
 WINDOWS_ARCHIVE="$OUT_DIR/${APP_NAME}_${VERSION}_windows_amd64.zip"
 DARWIN_AMD64_ARCHIVE="$OUT_DIR/${APP_NAME}_${VERSION}_darwin_amd64.tar.gz"
 DARWIN_ARM64_ARCHIVE="$OUT_DIR/${APP_NAME}_${VERSION}_darwin_arm64.tar.gz"
 
-CGO_ENABLED=1 GOOS=linux GOARCH=amd64 "$GO_BIN" build -o "$LINUX_BIN" ./cmd/$APP_NAME
-CC=x86_64-w64-mingw32-gcc CGO_ENABLED=1 GOOS=windows GOARCH=amd64 "$GO_BIN" build -ldflags='-H windowsgui' -o "$WINDOWS_BIN" ./cmd/$APP_NAME
+if has_target linux; then
+  mkdir -p "$BUILD_DIR/linux_amd64"
+  LINUX_BIN="$BUILD_DIR/linux_amd64/$APP_NAME"
+  CGO_ENABLED=1 GOOS=linux GOARCH=amd64 "$GO_BIN" build -o "$LINUX_BIN" ./cmd/$APP_NAME
+  cp "$ROOT/README.md" "$BUILD_DIR/linux_amd64/README.md"
+  cp "$LINUX_BIN" "$OUT_DIR/$APP_NAME"
+  tar -C "$BUILD_DIR/linux_amd64" -czf "$LINUX_ARCHIVE" "$APP_NAME" README.md
+fi
 
-cp "$ROOT/README.md" "$BUILD_DIR/linux_amd64/README.md"
-cp "$ROOT/README.md" "$BUILD_DIR/windows_amd64/README.md"
-cp "$LINUX_BIN" "$OUT_DIR/$APP_NAME"
-cp "$WINDOWS_BIN" "$OUT_DIR/$APP_NAME.exe"
+if has_target windows; then
+  mkdir -p "$BUILD_DIR/windows_amd64"
+  WINDOWS_BIN="$BUILD_DIR/windows_amd64/$APP_NAME.exe"
+  CC=x86_64-w64-mingw32-gcc CGO_ENABLED=1 GOOS=windows GOARCH=amd64 "$GO_BIN" build -ldflags='-H windowsgui' -o "$WINDOWS_BIN" ./cmd/$APP_NAME
+  cp "$ROOT/README.md" "$BUILD_DIR/windows_amd64/README.md"
+  cp "$WINDOWS_BIN" "$OUT_DIR/$APP_NAME.exe"
 
-tar -C "$BUILD_DIR/linux_amd64" -czf "$LINUX_ARCHIVE" "$APP_NAME" README.md
-
-if command -v zip >/dev/null 2>&1; then
-  (
-    cd "$BUILD_DIR/windows_amd64"
-    zip -q -r "$WINDOWS_ARCHIVE" "$APP_NAME.exe" README.md
-  )
-else
-  python3 - <<PY
+  if command -v zip >/dev/null 2>&1; then
+    (
+      cd "$BUILD_DIR/windows_amd64"
+      zip -q -r "$WINDOWS_ARCHIVE" "$APP_NAME.exe" README.md
+    )
+  else
+    python3 - <<PY
 import pathlib
 import zipfile
 root = pathlib.Path(r"$BUILD_DIR/windows_amd64")
@@ -57,11 +63,17 @@ with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as zf:
     for name in ["postman-lite.exe", "README.md"]:
         zf.write(root / name, arcname=name)
 PY
+  fi
 fi
 
 if command -v "$FYNE_BIN" >/dev/null 2>&1; then
-  for arch in amd64 arm64; do
-    APP_DIR="$BUILD_DIR/darwin_${arch}"
+  for target in darwin_amd64 darwin_arm64; do
+    if ! has_target "$target"; then
+      continue
+    fi
+    arch="${target#darwin_}"
+    APP_DIR="$BUILD_DIR/$target"
+    mkdir -p "$APP_DIR"
     (
       cd "$ROOT"
       CGO_ENABLED=1 GOOS=darwin GOARCH="$arch" "$FYNE_BIN" package \
@@ -78,10 +90,12 @@ if command -v "$FYNE_BIN" >/dev/null 2>&1; then
     tar -C "$APP_DIR" -czf "$OUT_DIR/${APP_NAME}_${VERSION}_darwin_${arch}.tar.gz" "$APP_NAME.app" README.md
   done
 else
-  echo "warning: fyne CLI not found, macOS app packaging skipped" >&2
+  if has_target darwin_amd64 || has_target darwin_arm64; then
+    echo "warning: fyne CLI not found, macOS app packaging skipped" >&2
+  fi
 fi
 
-echo "Built: $LINUX_ARCHIVE"
-echo "Built: $WINDOWS_ARCHIVE"
+if [[ -f "$LINUX_ARCHIVE" ]]; then echo "Built: $LINUX_ARCHIVE"; fi
+if [[ -f "$WINDOWS_ARCHIVE" ]]; then echo "Built: $WINDOWS_ARCHIVE"; fi
 if [[ -f "$DARWIN_AMD64_ARCHIVE" ]]; then echo "Built: $DARWIN_AMD64_ARCHIVE"; fi
 if [[ -f "$DARWIN_ARM64_ARCHIVE" ]]; then echo "Built: $DARWIN_ARM64_ARCHIVE"; fi
