@@ -176,23 +176,27 @@ func (d *DesktopApp) Run() error {
 	statusValue := widget.NewLabel("未发送")
 	timeValue := widget.NewLabel("-")
 	sizeValue := widget.NewLabel("-")
-	respHeaders := widget.NewMultiLineEntry()
-	respHeaders.Disable()
-	respHeaders.Wrapping = fyne.TextWrapWord
-	respBody := widget.NewMultiLineEntry()
-	respBody.Disable()
-	respBody.Wrapping = fyne.TextWrapWord
+	respHeaders := widget.NewTextGrid()
+	respBody := widget.NewTextGrid()
+	respHeaders.ShowLineNumbers = false
+	respBody.ShowLineNumbers = false
 
 	var (
-		tabs            []tabDescriptor
-		selectedIndex   int
-		ignoreFieldSave bool
-		tabBar          *fyne.Container
-		tabScroll       *container.Scroll
+		tabs              []tabDescriptor
+		selectedIndex     int
+		ignoreFieldSave   bool
+		suppressStateSave bool
+		tabBar            *fyne.Container
+		tabScroll         *container.Scroll
+		importRunning     bool
+		importCancel      context.CancelFunc
+		respHeadersText   string
+		respBodyText      string
+		importDialog      dialog.Dialog
 	)
 
 	saveState := func() {
-		if len(tabs) == 0 {
+		if suppressStateSave || len(tabs) == 0 {
 			return
 		}
 		st := state.FormState{
@@ -259,28 +263,11 @@ func (d *DesktopApp) Run() error {
 		bodyEntry.SetText(pretty)
 		updateCurrentFromFields()
 	})
-	importBtn := widget.NewButton("导入 OpenAPI JSON", func() {
-		importDialog := dialog.NewCustomConfirm("导入 OpenAPI JSON", "导入", "取消", container.NewBorder(
-			widget.NewLabel("粘贴 OpenAPI 3 JSON 后导入，会按接口生成请求标签页。"), nil, nil, nil,
-			func() *widget.Entry {
-				entry := widget.NewMultiLineEntry()
-				entry.Wrapping = fyne.TextWrapWord
-				entry.SetPlaceHolder("{\n  \"openapi\": \"3.0.0\", ...\n}")
-				entry.Resize(fyne.NewSize(720, 420))
-				importDialogEntry = entry
-				return entry
-			}(),
-		), func(ok bool) {
-			if !ok {
-				return
-			}
-			importOpenAPI(importDialogEntry.Text)
-		}, win)
-		importDialog.Resize(fyne.NewSize(760, 520))
-		importDialog.Show()
+	copyHeadersBtn := widget.NewButton("复制响应头", func() {
+		win.Clipboard().SetContent(respHeadersText)
 	})
 	copyBtn := widget.NewButton("复制响应体", func() {
-		win.Clipboard().SetContent(respBody.Text)
+		win.Clipboard().SetContent(respBodyText)
 	})
 	stateBtn := widget.NewButton("查看状态文件", func() {
 		path, err := state.Path()
@@ -291,7 +278,7 @@ func (d *DesktopApp) Run() error {
 		dialog.ShowInformation("状态文件", path, win)
 	})
 
-	requestHint := widget.NewLabel("提示：支持导入 OpenAPI 3 JSON，请使用“导入 OpenAPI JSON”按钮粘贴导入。部分桌面环境下右键/中键行为受 Fyne 平台支持限制，已保留按钮与菜单兜底。")
+	requestHint := widget.NewLabel("提示：支持导入 OpenAPI 3 JSON。导入在后台执行，可取消，并会分批创建请求标签页；大文档可优先使用“从剪贴板导入”。")
 	requestHint.Wrapping = fyne.TextWrapWord
 
 	queueUI := func(fn func()) {
@@ -301,6 +288,20 @@ func (d *DesktopApp) Run() error {
 		}
 		fn()
 	}
+
+	importStatusLabel := widget.NewLabel("正在导入…")
+	importStatusLabel.Wrapping = fyne.TextWrapWord
+	importProgress := widget.NewProgressBar()
+	importProgress.SetValue(0)
+	importCancelBtn := widget.NewButtonWithIcon("", theme.CancelIcon(), func() {
+		if importCancel != nil {
+			importStatusLabel.SetText("正在取消导入…")
+			importCancel()
+		}
+	})
+	importCancelBtn.Importance = widget.LowImportance
+	importStatusBar := container.NewBorder(nil, nil, nil, importCancelBtn, container.NewVBox(importStatusLabel, importProgress))
+	importStatusBar.Hide()
 
 	sendBtn.OnTapped = func() {
 		updateCurrentFromFields()
@@ -316,6 +317,8 @@ func (d *DesktopApp) Run() error {
 		statusValue.SetText("请求中...")
 		timeValue.SetText("-")
 		sizeValue.SetText("-")
+		respHeadersText = ""
+		respBodyText = ""
 		respHeaders.SetText("")
 		respBody.SetText("")
 
@@ -328,17 +331,65 @@ func (d *DesktopApp) Run() error {
 				sendBtn.Enable()
 				if resp.Error != "" {
 					statusValue.SetText("失败")
-					respBody.SetText(resp.Error)
+					respBodyText = resp.Error
+					respBody.SetText(respBodyText)
 					return
 				}
 				statusValue.SetText(resp.Status)
 				timeValue.SetText(resp.DurationText())
 				sizeValue.SetText(fmt.Sprintf("%d bytes", resp.Size))
-				respHeaders.SetText(FormatHeaders(resp.Headers))
-				respBody.SetText(MaybePrettyBody(resp.Body, resp.Headers))
+				respHeadersText = FormatHeaders(resp.Headers)
+				respBodyText = MaybePrettyBody(resp.Body, resp.Headers)
+				respHeaders.SetText(respHeadersText)
+				respBody.SetText(respBodyText)
 			})
 		}(request)
 	}
+
+	showImportDialog := func(prefill string) {
+		importDialog = dialog.NewCustomConfirm("导入 OpenAPI JSON", "导入", "取消", container.NewBorder(
+			container.NewVBox(
+				widget.NewLabel("粘贴 OpenAPI 3 JSON 后导入，会按接口生成请求标签页。大文档卡粘贴时可直接用剪贴板导入。"),
+				container.NewHBox(
+					widget.NewButton("从剪贴板填充", func() {
+						if importDialogEntry != nil {
+							importDialogEntry.SetText(strings.TrimSpace(win.Clipboard().Content()))
+						}
+					}),
+					widget.NewButton("直接从剪贴板导入", func() {
+						if importDialog != nil {
+							importDialog.Hide()
+						}
+						importOpenAPI(win.Clipboard().Content())
+					}),
+				),
+			),
+			nil, nil, nil,
+			func() *widget.Entry {
+				entry := widget.NewMultiLineEntry()
+				entry.Wrapping = fyne.TextWrapWord
+				entry.SetPlaceHolder("{\n  \"openapi\": \"3.0.0\", ...\n}")
+				entry.SetText(prefill)
+				entry.Resize(fyne.NewSize(720, 420))
+				importDialogEntry = entry
+				return entry
+			}(),
+		), func(ok bool) {
+			if !ok {
+				return
+			}
+			importOpenAPI(importDialogEntry.Text)
+		}, win)
+		importDialog.Resize(fyne.NewSize(760, 560))
+		importDialog.Show()
+	}
+
+	importBtn := widget.NewButton("导入 OpenAPI JSON", func() {
+		showImportDialog("")
+	})
+	clipboardImportBtn := widget.NewButton("从剪贴板导入", func() {
+		importOpenAPI(win.Clipboard().Content())
+	})
 
 	buildContextMenu := func(index int, pos fyne.Position) {
 		menu := fyne.NewMenu("",
@@ -477,18 +528,98 @@ func (d *DesktopApp) Run() error {
 	importOpenAPI = func(raw string) {
 		raw = strings.TrimSpace(raw)
 		if raw == "" {
-			dialog.ShowInformation("导入 OpenAPI", "请输入或粘贴 OpenAPI 3 JSON。", win)
+			dialog.ShowInformation("导入 OpenAPI", "请输入、粘贴或从剪贴板读取 OpenAPI 3 JSON。", win)
 			return
 		}
-		items, err := ParseOpenAPIJSON(raw, &stored.NextTabIndex)
-		if err != nil {
-			dialog.ShowError(err, win)
+		if importRunning {
+			dialog.ShowInformation("导入 OpenAPI", "已有导入任务正在进行，请先等待完成或取消。", win)
 			return
 		}
-		for i, item := range items {
-			createTab(item, i == len(items)-1)
-		}
-		dialog.ShowInformation("导入完成", fmt.Sprintf("已导入 %d 个接口标签页。", len(items)), win)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		importRunning = true
+		importCancel = cancel
+		importBtn.Disable()
+		clipboardImportBtn.Disable()
+		importStatusLabel.SetText("正在导入… 解析 OpenAPI JSON")
+		importProgress.SetValue(0)
+		importStatusBar.Show()
+
+		go func(raw string) {
+			tempNextIndex := stored.NextTabIndex
+			items, err := ParseOpenAPIJSON(raw, &tempNextIndex)
+			if err != nil {
+				queueUI(func() {
+					importRunning = false
+					importCancel = nil
+					importBtn.Enable()
+					clipboardImportBtn.Enable()
+					importStatusBar.Hide()
+					dialog.ShowError(err, win)
+				})
+				return
+			}
+			if ctx.Err() != nil {
+				queueUI(func() {
+					importRunning = false
+					importCancel = nil
+					importBtn.Enable()
+					clipboardImportBtn.Enable()
+					importStatusBar.Hide()
+					dialog.ShowInformation("导入已取消", "已取消 OpenAPI 导入，未继续创建标签页。", win)
+				})
+				return
+			}
+
+			total := len(items)
+			const batchSize = 12
+			applied := 0
+			for start := 0; start < total; start += batchSize {
+				if ctx.Err() != nil {
+					break
+				}
+				end := start + batchSize
+				if end > total {
+					end = total
+				}
+				batch := append([]state.RequestTabState(nil), items[start:end]...)
+				batchEnd := end
+				queueUI(func() {
+					if ctx.Err() != nil {
+						return
+					}
+					suppressStateSave = true
+					for _, item := range batch {
+						createTab(item, false)
+					}
+					suppressStateSave = false
+					applied = batchEnd
+					importStatusLabel.SetText(fmt.Sprintf("正在导入… 已创建 %d/%d 个标签页", applied, total))
+					importProgress.SetValue(float64(applied) / float64(total))
+				})
+				time.Sleep(20 * time.Millisecond)
+			}
+
+			queueUI(func() {
+				importRunning = false
+				importCancel = nil
+				importBtn.Enable()
+				clipboardImportBtn.Enable()
+				importStatusBar.Hide()
+				if ctx.Err() != nil {
+					dialog.ShowInformation("导入已取消", fmt.Sprintf("已停止导入，已创建 %d/%d 个标签页。", applied, total), win)
+					if applied > 0 {
+						saveState()
+					}
+					return
+				}
+				if total > 0 {
+					selectTab(len(tabs) - 1)
+					saveState()
+				}
+				dialog.ShowInformation("导入完成", fmt.Sprintf("已导入 %d 个接口标签页。", total), win)
+			})
+		}(raw)
 	}
 
 	requestPane := container.NewBorder(
@@ -496,7 +627,7 @@ func (d *DesktopApp) Run() error {
 			widget.NewLabelWithStyle("请求", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 			requestHint,
 			container.NewBorder(nil, nil, methodSelect, nil, urlEntry),
-			container.NewHBox(sendBtn, formatBtn, importBtn, copyBtn, stateBtn),
+			container.NewHBox(sendBtn, formatBtn, importBtn, clipboardImportBtn, copyBtn, stateBtn),
 		),
 		nil,
 		nil,
@@ -517,13 +648,14 @@ func (d *DesktopApp) Run() error {
 		container.NewVBox(
 			widget.NewLabelWithStyle("响应", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 			meta,
+			container.NewHBox(copyHeadersBtn),
 		),
 		nil,
 		nil,
 		nil,
 		container.NewVSplit(
-			container.NewBorder(widget.NewLabel("响应头"), nil, nil, nil, respHeaders),
-			container.NewBorder(widget.NewLabel("响应体"), nil, nil, nil, respBody),
+			container.NewBorder(widget.NewLabel("响应头"), nil, nil, nil, container.NewScroll(respHeaders)),
+			container.NewBorder(widget.NewLabel("响应体"), nil, nil, nil, container.NewScroll(respBody)),
 		),
 	)
 
@@ -547,7 +679,7 @@ func (d *DesktopApp) Run() error {
 	})
 	moreTabsBtn.Importance = widget.LowImportance
 	tabHeader := container.NewBorder(nil, nil, nil, container.NewHBox(moreTabsBtn, newTabBtn), tabScroll)
-	content := container.NewBorder(tabHeader, nil, nil, nil, split)
+	content := container.NewBorder(tabHeader, importStatusBar, nil, nil, split)
 	win.SetContent(container.New(layout.NewMaxLayout(), content))
 
 	if len(stored.Tabs) == 0 {
