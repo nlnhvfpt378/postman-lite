@@ -188,6 +188,7 @@ func (d *DesktopApp) Run() error {
 		selectedIndex   int
 		ignoreFieldSave bool
 		tabBar          *fyne.Container
+		tabScroll       *container.Scroll
 	)
 
 	saveState := func() {
@@ -290,11 +291,27 @@ func (d *DesktopApp) Run() error {
 		dialog.ShowInformation("状态文件", path, win)
 	})
 
-	requestHint := widget.NewLabel("提示：支持导入 OpenAPI 3 JSON；也可直接按 Ctrl+V / Cmd+V 在窗口内粘贴触发导入。部分桌面环境下右键/中键行为受 Fyne 平台支持限制，已保留按钮与菜单兜底。")
+	requestHint := widget.NewLabel("提示：支持导入 OpenAPI 3 JSON，请使用“导入 OpenAPI JSON”按钮粘贴导入。部分桌面环境下右键/中键行为受 Fyne 平台支持限制，已保留按钮与菜单兜底。")
 	requestHint.Wrapping = fyne.TextWrapWord
+
+	queueUI := func(fn func()) {
+		if queued, ok := interface{}(win).(interface{ QueueEvent(func()) }); ok {
+			queued.QueueEvent(fn)
+			return
+		}
+		fn()
+	}
 
 	sendBtn.OnTapped = func() {
 		updateCurrentFromFields()
+
+		request := model.Request{
+			Method:  methodSelect.Selected,
+			URL:     strings.TrimSpace(urlEntry.Text),
+			Headers: ParseHeaders(headersEntry.Text),
+			Body:    bodyEntry.Text,
+		}
+
 		sendBtn.Disable()
 		statusValue.SetText("请求中...")
 		timeValue.SetText("-")
@@ -302,25 +319,25 @@ func (d *DesktopApp) Run() error {
 		respHeaders.SetText("")
 		respBody.SetText("")
 
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
-		resp := d.core.Client.Send(ctx, model.Request{
-			Method:  methodSelect.Selected,
-			URL:     strings.TrimSpace(urlEntry.Text),
-			Headers: ParseHeaders(headersEntry.Text),
-			Body:    bodyEntry.Text,
-		})
-		defer sendBtn.Enable()
-		if resp.Error != "" {
-			statusValue.SetText("失败")
-			respBody.SetText(resp.Error)
-			return
-		}
-		statusValue.SetText(resp.Status)
-		timeValue.SetText(resp.DurationText())
-		sizeValue.SetText(fmt.Sprintf("%d bytes", resp.Size))
-		respHeaders.SetText(FormatHeaders(resp.Headers))
-		respBody.SetText(MaybePrettyBody(resp.Body, resp.Headers))
+		go func(req model.Request) {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+
+			resp := d.core.Client.Send(ctx, req)
+			queueUI(func() {
+				sendBtn.Enable()
+				if resp.Error != "" {
+					statusValue.SetText("失败")
+					respBody.SetText(resp.Error)
+					return
+				}
+				statusValue.SetText(resp.Status)
+				timeValue.SetText(resp.DurationText())
+				sizeValue.SetText(fmt.Sprintf("%d bytes", resp.Size))
+				respHeaders.SetText(FormatHeaders(resp.Headers))
+				respBody.SetText(MaybePrettyBody(resp.Body, resp.Headers))
+			})
+		}(request)
 	}
 
 	buildContextMenu := func(index int, pos fyne.Position) {
@@ -337,8 +354,11 @@ func (d *DesktopApp) Run() error {
 		widget.ShowPopUpMenuAtPosition(menu, win.Canvas(), pos)
 	}
 
+	var moreTabsBtn *widget.Button
+	showTabListMenu := func() {}
+
 	refreshTabBar = func() {
-		objects := make([]fyne.CanvasObject, 0, len(tabs)+2)
+		objects := make([]fyne.CanvasObject, 0, len(tabs))
 		for i := range tabs {
 			i := i
 			item := tabs[i].item
@@ -349,20 +369,31 @@ func (d *DesktopApp) Run() error {
 			item.onClose = func() { closeTabAt(i) }
 			objects = append(objects, item)
 		}
-		newTabBtn := widget.NewButtonWithIcon("新建", theme.ContentAddIcon(), func() {
-			createTab(state.RequestTabState{
-				ID:      fmt.Sprintf("tab-%d", stored.NextTabIndex),
-				Title:   fmt.Sprintf("请求 %d", stored.NextTabIndex),
-				Method:  "GET",
-				URL:     "",
-				Headers: "",
-				Body:    "",
-			}, true)
-		})
-		newTabBtn.Importance = widget.LowImportance
-		objects = append(objects, layout.NewSpacer(), newTabBtn)
 		tabBar.Objects = objects
 		tabBar.Refresh()
+		if tabScroll != nil {
+			tabScroll.Refresh()
+		}
+	}
+
+	showTabListMenu = func() {
+		if moreTabsBtn == nil || len(tabs) == 0 {
+			return
+		}
+		items := make([]*fyne.MenuItem, 0, len(tabs))
+		for i := range tabs {
+			i := i
+			prefix := ""
+			if i == selectedIndex {
+				prefix = "✓ "
+			}
+			title := strings.TrimSpace(tabs[i].state.Title)
+			if title == "" {
+				title = fmt.Sprintf("请求 %d", i+1)
+			}
+			items = append(items, fyne.NewMenuItem(prefix+title, func() { selectTab(i) }))
+		}
+		widget.ShowPopUpMenuAtRelativePosition(fyne.NewMenu("", items...), win.Canvas(), fyne.NewPos(0, 0), moreTabsBtn)
 	}
 
 	selectTab = func(index int) {
@@ -460,24 +491,6 @@ func (d *DesktopApp) Run() error {
 		dialog.ShowInformation("导入完成", fmt.Sprintf("已导入 %d 个接口标签页。", len(items)), win)
 	}
 
-	// 在窗口级别接管粘贴快捷键，作为可靠导入入口兜底。
-	win.Canvas().AddShortcut(&fyne.ShortcutPaste{}, func(shortcut fyne.Shortcut) {
-		paste, ok := shortcut.(*fyne.ShortcutPaste)
-		if !ok {
-			return
-		}
-		content := ""
-		if paste.Clipboard != nil {
-			content = paste.Clipboard.Content()
-		} else {
-			content = win.Clipboard().Content()
-		}
-		trimmed := strings.TrimSpace(content)
-		if strings.HasPrefix(trimmed, "{") && strings.Contains(trimmed, "\"openapi\"") {
-			importOpenAPI(trimmed)
-		}
-	})
-
 	requestPane := container.NewBorder(
 		container.NewVBox(
 			widget.NewLabelWithStyle("请求", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
@@ -517,7 +530,24 @@ func (d *DesktopApp) Run() error {
 	split := container.NewHSplit(requestPane, responsePane)
 	split.SetOffset(0.48)
 	tabBar = container.NewHBox()
-	content := container.NewBorder(tabBar, nil, nil, nil, split)
+	tabScroll = container.NewHScroll(tabBar)
+	newTabBtn := widget.NewButtonWithIcon("新建", theme.ContentAddIcon(), func() {
+		createTab(state.RequestTabState{
+			ID:      fmt.Sprintf("tab-%d", stored.NextTabIndex),
+			Title:   fmt.Sprintf("请求 %d", stored.NextTabIndex),
+			Method:  "GET",
+			URL:     "",
+			Headers: "",
+			Body:    "",
+		}, true)
+	})
+	newTabBtn.Importance = widget.LowImportance
+	moreTabsBtn = widget.NewButtonWithIcon("更多", theme.MenuExpandIcon(), func() {
+		showTabListMenu()
+	})
+	moreTabsBtn.Importance = widget.LowImportance
+	tabHeader := container.NewBorder(nil, nil, nil, container.NewHBox(moreTabsBtn, newTabBtn), tabScroll)
+	content := container.NewBorder(tabHeader, nil, nil, nil, split)
 	win.SetContent(container.New(layout.NewMaxLayout(), content))
 
 	if len(stored.Tabs) == 0 {
